@@ -1,8 +1,4 @@
-Provide your solution here:
 
-
-
----
 
 
 # **Product Specification – Core Trading Platform (Crypto Spot Market)**
@@ -112,7 +108,7 @@ It establishes the key objectives and requirements necessary for system design a
 
 
 
-# **Solution Architecture Decision Report**
+# **Solution Architecture Decision**
 
 ## **Strategic Guiding Principles**
 
