@@ -59,9 +59,9 @@ It establishes the key objectives and requirements necessary for system design a
 - **FR1:** Accept new and cancel order requests via REST API.
 - **FR2:** Persist orders immediately with ACID guarantees (status = pending).
 - **FR3:** Match orders atomically inside database transactions.
-- **FR4:** Emit price updates and trade events to Kafka upon matching.
-- **FR5:** Stream real-time **price updates** to clients via WebSocket over Redis.
-- **FR6:** Stream real-time **trade events** to clients via WebSocket over Redis.
+- **FR4:** Emit price updates and trade events to Event Streaming service upon matching.
+- **FR5:** Stream real-time **price updates** to clients via WebSocket.
+- **FR6:** Stream real-time **trade events** to clients via WebSocket.
 - **FR7:** Persist historical price and trade data in a structured database.
 - **FR8:** Provide RESTful APIs for querying historical price and trade data by symbol and time range.
 - **FR9:** Deliver a responsive **Web App Frontend** that:
@@ -77,10 +77,9 @@ It establishes the key objectives and requirements necessary for system design a
 - **NFR1:** Sustain 500 RPS baseline load, with burst up to 2,500 RPS within 5 minutes.
 - **NFR2:** Ensure system matching p99 latency < 100ms; WebSocket stream latency p99 < 20ms.
 - **NFR3:** Guarantee ≥99.99% availability with Multi-AZ setup.
-- **NFR4:** Persist event logs in Kafka with 7-day retention.
-- **NFR5:** Encrypt all traffic via TLS 1.3; OAuth2 for client authentication.
-- **NFR6:** Allow dynamic addition of new trading pairs without downtime.
-- **NFR7:** Deliver the Web Frontend as a low-latency, highly available static web app, suitable for scaling globally (CDN delivery).
+- **NFR4:** Encrypt all traffic via TLS 1.3; OAuth2 for client authentication.
+- **NFR5:** Allow dynamic addition of new trading pairs without downtime.
+- **NFR6:** Deliver the Web Frontend as a low-latency, highly available static web app, suitable for scaling globally (CDN delivery).
 
 ---
 
@@ -122,6 +121,7 @@ Before diving into specific components, I've structured my selections based on c
 ---
 
 ## Services Diagram
+![Services Diagram](https://raw.githubusercontent.com/namese1994/99tech_code_test/init/src/problem2/Services%20Diagram%202.png)
 
 
 ##  Component-by-Component Breakdown
@@ -153,24 +153,33 @@ Before diving into specific components, I've structured my selections based on c
 ---
 
 ### 【3】Event Streaming Layer – Service Description
-Is a buffer layer, avoid blocking when interract with Historical DB and Cache DB
 
-- **Amazon Kinesis Data Streams** serves as the central event bus directly before and after the Matching Engine.  
-  - Every matched order produces two events: **`trade.executed`** (trade tape) and **`price.update`** (best bid/ask snapshot).  
-  - Producers write to Kinesis with a **partition key = trading pair**, guaranteeing in-order delivery within each symbol.  
+- **After Order-Entry Service**:  
+  When a new order is submitted, an event is immediately published to the Event Streaming Layer after being persisted in the Order Database.  
+  This ensures **durability first**, then **asynchronous event propagation** to avoid blocking client-side responsiveness.
+
+- **After Matching Engine Service**:  
+  Once orders are matched, **price updates** and **trade execution events** are published to the Event Streaming Layer.  
+  These events are critical for updating client-side price boards, order books, and trade tapes.
+
+- **Role of the Event Streaming Layer**:  
+  - **Acts as a buffer** between critical core services (Order-Entry, Matching Engine) and all downstream consumers (WebSocket servers, historical writers, analytics engines).  
+  - **Prevents direct coupling** between services, allowing each component to process events at its own pace without blocking upstream operations.  
+  - **Facilitates scalability** by allowing multiple consumers to subscribe and process events independently (e.g., risk engine, audit logging, PnL calculation).
+ 
 
 > **Why serverless?**  
-> Traffic in crypto trading is highly volatile and unpredictable; serverless automatically scales with real-world usage peaks.
+> Traffic in crypto trading is highly volatile and unpredictable; serverless automatically scales with real-world usage peaks while saving cost.
 
 ---
 
 ### 【4】Microservices Layer (Running on Amazon EKS)
 
 - **Order-Entry Service**:  
-  Receives order placement/cancellation requests from the frontend. Validates input, persists pending orders into the database, and publishes `orders.new` events to Kafka.
+  Receives order placement/cancellation requests from the frontend. Validates input, persists pending orders into the database, and publishes `orders.new` events to Event Streaming.
 
 - **Matching Engine**:  
-  Consumes new orders from Kafka. Executes atomic order matching with full ACID compliance inside Aurora PostgreSQL. Publishes trade and price update events.
+  Consumes new orders from Event Streaming. Executes atomic order matching with full ACID compliance inside Aurora PostgreSQL. Publishes trade and price update events.
 
 - **Price WebSocket Server**:  
   Subscribes to Redis price channels and pushes real-time price updates to WebSocket clients.
@@ -179,11 +188,11 @@ Is a buffer layer, avoid blocking when interract with Historical DB and Cache DB
   Subscribes to Redis trade channels and pushes real-time trade execution updates.
 
 - **History-API Service**:  
-  Exposes REST endpoints allowing clients to query historical price and trade data by symbol and time range.
+  Exposes REST endpoints allowing clients to query historical price and trade data by symbol and time range. This happen when user open price dashboard or view historical price on chart. 
 
-- **Kafka Consumers (Price Consumer, Trade Consumer, History Writer)**:  
-  - Price Consumer: Updates Redis price channels based on Kafka `price.update` events.
-  - Trade Consumer: Updates Redis trade channels based on Kafka `trade.executed` events.
+- **Event Streaming Consumers (Price Consumer, Trade Consumer, History Writer)**:  
+  - Price Consumer: Updates Redis price channels based on Event Streaming `price.update` events.
+  - Trade Consumer: Updates Redis trade channels based on Event Streaming `trade.executed` events.
   - History Writer: Persists price and trade events into a partitioned Aurora database for historical queries.
 
 > **Why decompose services like this?**  
@@ -194,6 +203,7 @@ Is a buffer layer, avoid blocking when interract with Historical DB and Cache DB
 ---
 
 ### 【5】Transactional Database
+- Storage orders and transactions information
 
 - **Amazon Aurora PostgreSQL**:  
   Main ACID-compliant database storing pending orders, executed trades, and order book state.  
@@ -206,6 +216,9 @@ Is a buffer layer, avoid blocking when interract with Historical DB and Cache DB
 ---
 
 ### 【6】Historical Time-Series Storage
+- Purpose: Store historical of price in time serier
+- Separate Event Streaming DB load because this service takes up too much load in the system.
+- Provided query from DB
 
 - **Amazon Aurora PostgreSQL (Partitioned Tables)**:  
   Stores historical price and trade data.  
@@ -219,13 +232,15 @@ Is a buffer layer, avoid blocking when interract with Historical DB and Cache DB
 ---
 
 ### 【7】Real-Time Caching and Fan-Out Layer
+- Purpose: Store the latest price and latest trade information for each trading pair.
 
+- Offload Event Streaming Layer: Reading directly from the Event Streaming system (e.g., Kinesis or Kafka) would create extremely high read load, unacceptable latency, and potential message delivery bottlenecks.
 - **Amazon ElastiCache Redis (Cluster-Mode)**:  
   Stores latest price and trade updates in Redis pub/sub channels.  
   Supports sub-millisecond retrieval for fan-out to thousands of WebSocket clients.
 
 > **Why necessary?**  
-> Redis acts as a highly efficient intermediary to offload the Kafka cluster and ensure real-time responsiveness for streaming to clients.
+> Redis acts as a highly efficient intermediary to offload the Event Streaming and ensure real-time responsiveness for streaming to clients.
 
 > **Why cluster mode?**  
 > - Allows horizontal scaling via online resharding.  
