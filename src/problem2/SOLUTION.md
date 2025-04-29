@@ -51,6 +51,9 @@ It establishes the key objectives and requirements necessary for system design a
 - **Responsive Frontend Delivery**  
   Deliver a fast and reliable Web Application, with real-time price feeds and historical data queries, optimized for desktop users.
 
+- **High Availability Commitment**
+  The platform must maintain ≥99.99% availability under all conditions, including failover events, using Multi-AZ deployments, redundant components, and automated recovery mechanisms.
+
 
 ---
 
@@ -139,6 +142,7 @@ Before diving into specific components, I've structured my selections based on c
 
 > **Why necessary?**  
 > Static SPA must be globally available with low latency to ensure a seamless user experience for real-time trading interfaces.
+> CloudFront leverages AWS’s global edge network for automatic failover and regional redundancy.
 
 ---
 
@@ -149,6 +153,7 @@ Before diving into specific components, I've structured my selections based on c
 
 > **Why necessary?**  
 > Enables secure, scalable, and efficient routing to microservices, while supporting WebSocket upgrades for real-time streams.
+> ALB and EKS Ingress are deployed Multi-AZ by default, ensuring zero single points of failure
 
 ---
 
@@ -199,6 +204,7 @@ Before diving into specific components, I've structured my selections based on c
 > - Isolates concerns (order intake vs matching vs streaming vs history)  
 > - Enables independent scaling based on workload patterns (e.g., scale WebSocket servers separately when user connections spike).  
 > - Improves resilience and fault tolerance across services.
+> - EKS nodes are distributed across multiple Availability Zones to tolerate node or AZ failures without service disruption.
 
 ---
 
@@ -212,6 +218,7 @@ Before diving into specific components, I've structured my selections based on c
 > **Why necessary?**  
 > Real-money transactions require strict ACID guarantees.  
 > Aurora offers predictable latency, high availability (Multi-AZ), and future upgrade path to Global Database if needed.
+> Aurora uses Multi-AZ architecture with automatic failover and 6-way replication for enhanced availability.
 
 ---
 
@@ -245,6 +252,7 @@ Before diving into specific components, I've structured my selections based on c
 > **Why cluster mode?**  
 > - Allows horizontal scaling via online resharding.  
 > - Prevents bottlenecks during sudden trading bursts.
+> - Redis Cluster mode with Multi-AZ failover ensures high availability even during node failures.
 
 
 ## **Detailed Component Selection & Strategic Rationale**
@@ -278,7 +286,7 @@ Deliver a reliable, high-throughput event backbone (after the Matching Engine) t
 
 | **Chosen Solution** | **Strategic Rationale** | **Alternative Solutions & When to Favour Them** |
 |---------------------|-------------------------|-------------------------------------------------|
-| **Amazon Kinesis Data Streams** | • Fully **serverless**: no brokers to size, patch, or scale.<br>• Sub-second autoscaling on shard count—ideal for the **spiky, burst-heavy** traffic of a crypto exchange.<br>• Simple, predictable pricing: pay for PUT payloads and shard-hours; no per-GB egress fees when consumers are in-VPC.<br>• Exactly-once processing achievable with Kinesis Enhanced Fan-Out + a per-partition sequence number, which is **sufficient for price/trade streams** that are naturally append-only. | **MSK Serverless (Kafka API)**<br>—Choose when strict topic-level ordering across many partitions, rich Kafka ecosystem tooling, or binary protocol compatibility with external partners is essential.<br>—Higher base cost (cluster-hour + GB in/out) but supports large historical retention and consumer-managed offsets.<br><br>**MSK Provisioned (+ Tiered Storage)**<br>—Best when traffic becomes **steady >40 % of peak 24/7** and the team is ready to handle broker sizing and patching.<br>—Lowest long-term cost per GB at very high sustained throughput; tiered storage off-loads cold segments to S3. |
+| **Amazon Kinesis Data Streams** | • Fully **serverless**: no brokers to size, patch, or scale.<br>• Sub-second autoscaling on shard count—ideal for the **spiky, burst-heavy** traffic of a crypto exchange.<br>• Simple, predictable pricing: pay for PUT payloads and shard-hours; no per-GB egress fees when consumers are in-VPC.<br>• Exactly-once processing achievable with Kinesis Enhanced Fan-Out + a per-partition sequence number, which is **sufficient for price/trade streams** that are naturally append-only. <br>• Kinesis Data Streams automatically replicates data across three Availability Zones, ensuring event durability and high availability. | **MSK Serverless (Kafka API)**<br>—Choose when strict topic-level ordering across many partitions, rich Kafka ecosystem tooling, or binary protocol compatibility with external partners is essential.<br>—Higher base cost (cluster-hour + GB in/out) but supports large historical retention and consumer-managed offsets.<br><br>**MSK Provisioned (+ Tiered Storage)**<br>—Best when traffic becomes **steady >40 % of peak 24/7** and the team is ready to handle broker sizing and patching.<br>—Lowest long-term cost per GB at very high sustained throughput; tiered storage off-loads cold segments to S3. |
 
 ---
 
